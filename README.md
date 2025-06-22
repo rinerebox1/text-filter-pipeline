@@ -363,3 +363,24 @@ if __name__ == "__main__":
 3.[GPU]hotchpotch/fineweb-2-edu-japanese-classifier を使って、フィルター済みのテキストに品質スコアをつける。
 
 渡したコードを使って、上記のパイプラインを組んでください。一旦 datasets.load_dataset("hotchpotch/fineweb-2-edu-japanese", split=train) の small_tokens_cleaned サブセットのテキストを使ってほしいので、それを1000件サンプリングしてdocsに保存してください。
+
+
+
+
+
+    {
+        "text": "~~~~~~~~~~~~。",
+        "is_cleaned": false,
+        "id": "<urn:uuid:25fb0bac-eb9e-4bc8-bf56-4f5a5409b85e>",
+        "dump": "CC-MAIN-2013-20",
+        "url": "http://www.hokuren.or.jp/product/index12.html",
+        "date": "2013-05-26T09:21:03Z",
+        "file_path": "s3://commoncrawl/crawl-data/CC-MAIN-2013-20/segments/1368706794379/warc/CC-MAIN-20130516121954-00028-ip-10-60-113-184.ec2.internal.warc.gz",
+        "language": "jpn",
+        "language_score": 1.0000053644180298,
+        "language_script": "Jpan",
+        "minhash_cluster_size": 1,
+        "top_langs": "{\"jpn_Jpan_score\": 1.0000053644180298}",
+        "score": 3.328125,
+        "token_count": 354
+    },
