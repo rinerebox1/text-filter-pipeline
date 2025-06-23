@@ -1,9 +1,20 @@
 import json
 import os
-import hojichar
 import logging
-from hojichar.filters.document_filters import JSONLoader, DocumentNormalizer, JSONDumper
-from hojichar.core.parallel import Parallel # This was likely correct
+# import hojichar # No longer directly used in main for Compose
+# from hojichar.filters.document_filters import JSONLoader, DocumentNormalizer, JSONDumper # Moved to cleaner
+# from hojichar.core.parallel import Parallel # Moved to cleaner
+
+# Import the new utility functions
+from utils.text_cleaner import clean_texts
+from utils.text_processor import score_texts
+
+# Attempt to import torch for initial device check for logging, if desired.
+# Actual torch dependency is handled within text_processor.
+try:
+    import torch
+except ImportError:
+    torch = None
 
 def load_data(file_path):
     """Loads data from a JSON file and extracts the 'text' field."""
@@ -53,36 +64,19 @@ def main():
     if texts:
         logger.debug(f"First text sample: '{texts[0][:100]}...'")
 
-    # Step 2: Filter text using HojiChar
-    logger.info("Filtering texts using HojiChar...")
+    # Step 2: Filter text using the utility function from text_cleaner
+    logger.info("Filtering texts using text_cleaner.clean_texts...")
+    num_cores_for_cleaning = os.cpu_count() or 1
+    # Note: clean_texts will log its own progress internally if its logger is configured.
+    # We pass the main logger's level for consistency if desired, or let it use its own.
+    # For now, clean_texts has its own logger.
+    filtered_texts_content = clean_texts(texts, num_cores=num_cores_for_cleaning)
 
-    # HojiChar's Parallel processor expects an iterable of hojichar.Document objects.
-    # We need to wrap our raw text strings into Document objects.
-    # The DocumentNormalizer will then operate on doc.text.
-    # We will then extract the processed text from the document.
-
-    # Define the HojiChar pipeline for strings
-    # DocumentNormalizer normalizes the text within a Document.
-    # We don't need JSONLoader/Dumper here as we are dealing with a list of strings in memory.
-    cleaner = hojichar.Compose([
-        DocumentNormalizer(),
-        # Add other text-based filters if needed, e.g., hojichar.filters.text_cleaning.CleanBadWords()
-    ])
-
-    input_documents = [hojichar.Document(text) for text in texts]
-
-    num_cores = os.cpu_count() or 1 # Default to 1 core if os.cpu_count() is None
-    logger.info(f"Using {num_cores} CPU cores for HojiChar processing.")
-
-    filtered_texts_content = []
-    with Parallel(cleaner, num_jobs=num_cores) as pfilter:
-        # pfilter.imap_apply returns an iterator of processed Document objects
-        for i, doc in enumerate(pfilter.imap_apply(input_documents)):
-            filtered_texts_content.append(doc.text)
-            if (i + 1) % 20 == 0: # Log progress every 20 texts
-                logger.info(f"HojiChar processed {i+1}/{len(texts)} texts...")
-
-    logger.info(f"HojiChar filtering complete. Processed {len(filtered_texts_content)} texts.")
+    if not filtered_texts_content:
+        logger.warning("Text cleaning returned no content. Proceeding might lead to errors or empty results.")
+        # Decide if to return or continue based on requirements. For now, continue.
+    else:
+        logger.info(f"Text cleaning complete. Processed {len(filtered_texts_content)} texts via utility.")
 
     # Save filtered texts to a JSONL file
     filtered_output_file = "filtered_texts.jsonl"
@@ -98,120 +92,68 @@ def main():
     if filtered_texts_content:
         logger.debug(f"First filtered text sample: '{filtered_texts_content[0][:100]}...'")
 
-    # Step 3: Score filtered texts using GPU scorer
-    logger.info("Preparing to score filtered texts...")
+    # Step 3: Score filtered texts using the utility function from text_processor
+    logger.info("Preparing to score filtered texts using text_processor.score_texts...")
 
-    Fineweb2EduJapaneseScoreClassifier = None # Define in outer scope
-    try:
-        from gpu_scorer import Fineweb2EduJapaneseScoreClassifier
-        logger.info("Successfully imported Fineweb2EduJapaneseScoreClassifier from gpu_scorer.py.")
-    except ImportError as e:
-        logger.warning(f"Could not import Fineweb2EduJapaneseScoreClassifier from gpu_scorer.py: {e}")
-        logger.warning("Please ensure transformers and torch are installed if you intend to run the scoring step.")
-        # Fineweb2EduJapaneseScoreClassifier remains None
+    # Load filtered texts from the JSONL file to pass to the scorer utility
+    # The utility itself doesn't handle file I/O for input texts to keep it focused.
+    texts_to_score_from_file = []
+    if os.path.exists(filtered_output_file):
+        logger.info(f"Loading filtered texts from {filtered_output_file} for scoring...")
+        try:
+            with open(filtered_output_file, 'r', encoding='utf-8') as f:
+                for line_num, line in enumerate(f, 1):
+                    try:
+                        texts_to_score_from_file.append(json.loads(line)['text'])
+                    except json.JSONDecodeError:
+                        logger.warning(f"Skipping malformed line {line_num} in {filtered_output_file}: {line.strip()}")
+                    except KeyError:
+                        logger.warning(f"Skipping line {line_num} in {filtered_output_file} due to missing 'text' key: {line.strip()}")
+        except IOError as e:
+            logger.error(f"Could not read filtered texts from {filtered_output_file}: {e}")
+            # texts_to_score_from_file remains empty
 
-    if Fineweb2EduJapaneseScoreClassifier:
-        # Load filtered texts from the JSONL file
-        texts_to_score = []
-        if os.path.exists(filtered_output_file):
-            logger.info(f"Loading filtered texts from {filtered_output_file} for scoring...")
-            try:
-                with open(filtered_output_file, 'r', encoding='utf-8') as f:
-                    for line_num, line in enumerate(f, 1):
-                        try:
-                            texts_to_score.append(json.loads(line)['text'])
-                        except json.JSONDecodeError:
-                            logger.warning(f"Skipping malformed line {line_num} in {filtered_output_file}: {line.strip()}")
-                        except KeyError:
-                            logger.warning(f"Skipping line {line_num} in {filtered_output_file} due to missing 'text' key: {line.strip()}")
-            except IOError as e:
-                logger.error(f"Could not read filtered texts from {filtered_output_file}: {e}")
-                texts_to_score = [] # Ensure it's empty if loading fails
-
-        if not texts_to_score:
-            logger.warning(f"No texts loaded from {filtered_output_file} to score. Skipping scoring step.")
-        else:
-            logger.info(f"Loaded {len(texts_to_score)} texts for scoring from {filtered_output_file}.")
-
-            model_name = "hotchpotch/fineweb-2-edu-japanese-classifier"
-            # Attempt to use CUDA, fall back to CPU if not available or specified otherwise.
-            # The classifier class itself has fallback logic.
-            device_to_use = "cuda" if torch.cuda.is_available() else "cpu"
-            # Allow user to force CPU for testing/compatibility
-            # device_to_use = "cpu" # Uncomment to force CPU
-
-            logger.info(f"Initializing classifier with model '{model_name}' on device: {device_to_use}...")
-
-            # Default batch size and num_workers, adjust based on device
-            batch_size = 32 if device_to_use == "cuda" else 8 # Smaller batch for CPU
-            num_workers = 4 if device_to_use == "cuda" else 1  # Fewer workers for CPU
-
-            logger.info(f"Using batch_size: {batch_size}, num_workers: {num_workers}")
-
-            try:
-                # Determine dtype based on device and availability
-                if device_to_use == "cuda" and hasattr(torch.cuda, 'is_bf16_supported') and torch.cuda.is_bf16_supported():
-                    dtype_to_use = torch.bfloat16
-                    logger.info("Using bfloat16 for GPU.")
-                elif device_to_use == "cuda":
-                    dtype_to_use = torch.float16 # Fallback to float16 if bfloat16 not supported
-                    logger.info("bfloat16 not supported on this GPU, using float16.")
-                else: # CPU
-                    dtype_to_use = torch.float32
-                    logger.info("Using float32 for CPU.")
-
-                classifier = Fineweb2EduJapaneseScoreClassifier(
-                    model_path=model_name,
-                    device=device_to_use,
-                    batch_size=batch_size,
-                    num_workers=num_workers,
-                    show_progress=True, # This will use tqdm for progress
-                    dtype=dtype_to_use
-                )
-                logger.info("Classifier initialized successfully.")
-
-                logger.info("Scoring texts...")
-                scored_results = classifier.predict(texts_to_score) # List of (is_edu, score)
-                logger.info(f"Scoring complete. Received {len(scored_results)} results.")
-
-                scored_output_file = "scored_texts.jsonl"
-                try:
-                    with open(scored_output_file, 'w', encoding='utf-8') as f:
-                        for i, text in enumerate(texts_to_score):
-                            if i < len(scored_results): # Ensure we don't go out of bounds
-                                is_educational, score = scored_results[i]
-                                f.write(json.dumps({"text": text, "is_educational": is_educational, "score": score}) + "\n")
-                            else:
-                                logger.warning(f"Mismatch between number of texts to score and results at index {i}. Skipping writing this result.")
-                    logger.info(f"Scored texts saved to {scored_output_file}")
-                    if scored_results:
-                        logger.debug(f"First scored text sample: Score={scored_results[0][1]:.2f}, Educational={scored_results[0][0]}, Text='{texts_to_score[0][:100]}...'")
-                except IOError as e:
-                    logger.error(f"Could not write scored texts to {scored_output_file}: {e}")
-
-
-            except NameError as ne: # Catch if torch or transformers aren't installed (should be caught by Fineweb2EduJapaneseScoreClassifier import)
-                 if 'torch' in str(ne).lower() or 'transformers' in str(ne).lower():
-                    logger.error(f"Skipping scoring: Required library not found ({ne}). Please install torch and transformers.")
-                 else:
-                    logger.error(f"An unexpected NameError occurred during scoring: {ne}")
-                    raise ne # Re-raise if it's another NameError
-            except RuntimeError as re: # Catch common PyTorch runtime errors e.g. CUDA OOM
-                logger.error(f"RuntimeError during scoring: {re}. This might be due to insufficient GPU memory. Try reducing batch_size.")
-                logger.error("Skipping scoring step due to RuntimeError.")
-            except Exception as e:
-                logger.error(f"An unexpected error occurred during scoring: {e}")
-                logger.error("Skipping scoring step.")
+    if not texts_to_score_from_file:
+        logger.warning(f"No texts loaded from {filtered_output_file} to score. Skipping scoring step.")
     else:
-        logger.info("Skipping scoring step as classifier could not be imported or initialized (likely missing dependencies like torch/transformers).")
+        logger.info(f"Loaded {len(texts_to_score_from_file)} texts for scoring from {filtered_output_file}.")
+
+        # Parameters for the scorer can be defined here or loaded from config
+        # The text_processor.score_texts function will handle auto-detection if some are None.
+        # For example, device, batch_size, num_workers, dtype can be None for auto-config.
+        scored_results = score_texts(
+            texts_to_score_from_file
+            # model_name="hotchpotch/fineweb-2-edu-japanese-classifier", # Default in function
+            # device=None, # Auto-detect
+            # batch_size=None, # Auto-set
+            # num_workers=None, # Auto-set
+            # dtype=None # Auto-set
+        )
+
+        if scored_results is not None:
+            logger.info(f"Scoring complete via utility. Received {len(scored_results)} results.")
+            scored_output_file = "scored_texts.jsonl"
+            try:
+                with open(scored_output_file, 'w', encoding='utf-8') as f:
+                    for i, text_content in enumerate(texts_to_score_from_file): # Use the original text for output
+                        if i < len(scored_results):
+                            is_educational, score_value = scored_results[i]
+                            f.write(json.dumps({"text": text_content, "is_educational": is_educational, "score": score_value}) + "\n")
+                        else:
+                            logger.warning(f"Mismatch between number of texts to score and results at index {i}. Skipping writing this result.")
+                logger.info(f"Scored texts saved to {scored_output_file}")
+                if scored_results:
+                    logger.debug(f"First scored text sample (from main): Score={scored_results[0][1]:.2f}, Educational={scored_results[0][0]}, Text='{texts_to_score_from_file[0][:100]}...'")
+            except IOError as e:
+                logger.error(f"Could not write scored texts to {scored_output_file}: {e}")
+        else:
+            logger.info("Scoring step was skipped or failed (e.g., classifier not available or error during processing). Check logs from text_processor.")
 
     logger.info("Text processing pipeline finished.")
 
 if __name__ == "__main__":
-    # Import torch here for device check before main() is called, if needed for device_to_use logic outside main
-    # For now, torch is checked within main() or when Fineweb2EduJapaneseScoreClassifier is imported/used.
-    try:
-        import torch # To check for CUDA availability early
-    except ImportError:
-        pass # Handled inside main
+    # Initial torch import for CUDA check is still fine here, or can be removed
+    # as text_processor also handles torch import.
+    # If torch is imported here, it's available for the device check in main's scope if any.
+    # For this refactoring, it's less critical in main.py directly.
     main()
