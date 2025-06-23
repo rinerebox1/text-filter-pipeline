@@ -48,7 +48,7 @@ logger.addHandler(file_handler)
 def main():
     logger.info("Starting the text processing pipeline.")
     # Step 1: Load data
-    data_file = "docs/fineweb_100_samples.json"
+    data_file = "data/fineweb_100_samples.json"
     if not os.path.exists(data_file):
         logger.error(f"Data file not found at {data_file}")
         # Suggestion to run the generation script might be removed if data is always pre-supplied

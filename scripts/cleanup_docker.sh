@@ -83,13 +83,6 @@ main() {
         force_remove_images_by_repository "$repo_pattern"
     done
     
-    echo -e "\n=== 未使用のDockerリソースもクリーンアップ ==="
-    echo "未使用のコンテナを削除中..."
-    docker container prune -f 2>/dev/null || true
-    
-    echo "未使用のイメージを削除中..."
-    docker image prune -f 2>/dev/null || true
-    
     echo -e "\n=== クリーンアップ完了 ==="
     echo "最終状態:"
     docker images --format "table {{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.Size}}" | grep -E "(openhands|runtime)" || echo "対象イメージは全て削除されました"
