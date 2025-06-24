@@ -1,0 +1,54 @@
+# Core dependencies for the text-filter-pipeline
+
+# For Gemini API access
+google-generativeai
+
+# Existing implicit dependencies (based on imports in the project):
+# torch (imported in main.py and text_processor.py)
+# transformers (imported in text_processor.py)
+# hojichar (imported in text_cleaner.py)
+# psutil (imported in text_processor.py)
+
+# It's good practice to list all direct dependencies.
+# Assuming versions are managed elsewhere or latest is acceptable.
+# If specific versions are needed, they should be added, e.g., google-generativeai>=0.5.0
+# For now, listing the package names.
+# The user can then run `pip install -r requirements.txt`
+# and `pip freeze > requirements.txt` to pin versions if needed.
+
+# Placeholder for other known dependencies (add as identified)
+# numpy
+# pandas
+# scikit-learn
+# etc.
+
+# Based on current code:
+# From text_processor.py:
+# torch
+# transformers
+# psutil
+# From text_cleaner.py:
+# hojichar
+
+# So, a more complete list might be:
+# google-generativeai
+# torch
+# transformers
+# hojichar
+# psutil
+#
+# However, some of these (like torch, transformers) can be large and might be
+# managed by a broader environment setup (e.g. Conda).
+# For this specific task, only google-generativeai is newly introduced.
+# I will list the ones explicitly imported in the modules I've touched or are core.
+# The user can refine this list.
+
+# Minimal new dependency:
+# google-generativeai
+
+# Expanded list based on visible imports in relevant modules:
+google-generativeai
+torch
+transformers
+hojichar
+psutil
