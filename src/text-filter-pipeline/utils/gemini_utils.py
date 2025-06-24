@@ -1,7 +1,11 @@
 import os
 import json
-import google.generativeai as genai
-from google.generativeai.types import GenerationConfig, HarmCategory, HarmBlockThreshold
+from google import genai
+from google.genai.types import (
+    GenerateContentConfig,
+    HarmCategory,
+    HarmBlockThreshold,
+)
 
 # Assuming the Gemini API key is set as an environment variable
 # For local development, you might use:
@@ -17,18 +21,15 @@ from google.generativeai.types import GenerationConfig, HarmCategory, HarmBlockT
 # If you have a specific way to load API keys (e.g. from a config file or env var),
 # that logic should be added here or handled by the calling application.
 # For now, this will only work if the environment is already configured for Gemini.
-try:
-    if not os.getenv("GEMINI_API_KEY"):
-        print("Warning: GEMINI_API_KEY environment variable not set. Gemini calls may fail.")
-    else:
-        genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-except Exception as e:
-    print(f"Error configuring Gemini: {e}. Ensure GEMINI_API_KEY is set and valid.")
-
+# Initialize Gemini client
+API_KEY = os.getenv("GEMINI_API_KEY")
+if not API_KEY:
+    print("Warning: GEMINI_API_KEY environment variable not set. Gemini calls may fail.")
+client = genai.Client(api_key=API_KEY)
 
 DEFAULT_SAFETY_SETTINGS = {
     HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-    HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+    HarmCategory.HARM_CATEGORY_HATE_SPEECH:  HarmBlockThreshold.BLOCK_NONE,
     HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
     HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
 }
@@ -36,7 +37,7 @@ DEFAULT_SAFETY_SETTINGS = {
 def call_gemini_api(
     prompt: str,
     response_schema: dict,
-    model_name: str = "gemini-1.5-flash-latest",
+    model_name: str = "gemini-2.5-flash",
     temperature: float = 0.2, # Lower temperature for more deterministic, schema-following output
     top_p: float = 0.95,
     top_k: int = 64,
@@ -59,69 +60,40 @@ def call_gemini_api(
         A dictionary parsed from the Gemini API's JSON response, or None if an error occurs.
     """
     try:
-        model = genai.GenerativeModel(
-            model_name,
-            generation_config=GenerationConfig(
-                response_mime_type="application/json",
-                response_schema=response_schema,
-                temperature=temperature,
-                top_p=top_p,
-                top_k=top_k,
-                max_output_tokens=max_output_tokens,
-            ),
-            safety_settings=DEFAULT_SAFETY_SETTINGS, # Using less restrictive safety settings for this task
+        cfg = GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema=response_schema,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            max_output_tokens=max_output_tokens,
         )
-        response = model.generate_content(prompt)
 
-        # Debugging: print raw response text
-        # print(f"Gemini raw response text: {response.text}")
+        # Issue the request
+        response = client.generative.generate_content(
+            model=model_name,
+            prompt=prompt,
+            config=cfg,
+            safety_settings=DEFAULT_SAFETY_SETTINGS,
+        )
 
-        # The API should directly return parsed JSON when response_mime_type and response_schema are used
-        # However, the SDK might wrap it, or if not, we might need to parse it.
-        # Based on documentation, with response_schema, response.text should be a valid JSON string.
-        # If the SDK auto-parses, response.parts[0].json_data or similar might be available.
-        # For now, let's assume response.text is the JSON string.
-
-        # Checking if the response text is valid JSON and parsing it.
-        # The Gemini API with response_schema should ideally return a dict directly
-        # or ensure response.text is a valid JSON string.
-        if response.text:
+        # Parse the JSON text
+        text = getattr(response, "text", None)
+        if text:
             try:
-                # Attempt to parse the JSON string.
-                # If the SDK has already parsed it into a specific structure,
-                # this might need adjustment (e.g., accessing response.parts[0].data).
-                # For now, standard json.loads on response.text.
-                return json.loads(response.text)
+                return json.loads(text)
             except json.JSONDecodeError as e:
                 print(f"Error decoding JSON from Gemini response: {e}")
-                print(f"Problematic response text: {response.text}")
+                print(f"Response text was: {text}")
                 return None
-            except AttributeError: # If response.text is not available or response is not as expected
-                print("Gemini response does not have a 'text' attribute or is malformed.")
-                # Try to access structured data if available (this part is speculative based on SDK versions)
-                try:
-                    if response.parts and hasattr(response.parts[0], "data"): # Example for some SDKs
-                         return response.parts[0].data # Or .json_data
-                    elif hasattr(response, "candidates") and response.candidates:
-                         # More common structure for Gemini responses
-                         # Check content type for JSON if using this path
-                         content = response.candidates[0].content
-                         if content.parts[0].text: # Assuming the first part contains the JSON string
-                            return json.loads(content.parts[0].text)
-                except Exception as e_alt:
-                    print(f"Could not extract JSON using alternative methods: {e_alt}")
-                return None
-
         else:
-            print("Gemini response was empty.")
+            print("Gemini response was empty or malformed.")
             return None
 
     except Exception as e:
         print(f"An error occurred while calling Gemini API: {e}")
-        # You might want to log the full traceback here for debugging
-        # import traceback
-        # print(traceback.format_exc())
         return None
+
 
 # Specific functions will be added below, using the above generic caller.
 # These will require the prompt templates and schemas, which are planned for the next step.
@@ -132,21 +104,26 @@ def call_gemini_api(
 # So, the import path from src.text-filter-pipeline.utils would be ..prompts
 try:
     from ..prompts import (
-        INPUT_DIFFICULTY_RATING_TEMPLATE, OUTPUT_DIFFICULTY_JSON_SCHEMA,
-        INPUT_QUALITY_RATING_TEMPLATE, OUTPUT_QUALITY_JSON_SCHEMA,
-        INPUT_CLASSIFICATION_TEMPLATE, OUTPUT_CLASSIFICATION_JSON_SCHEMA
+        INPUT_DIFFICULTY_RATING_TEMPLATE,
+        OUTPUT_DIFFICULTY_JSON_SCHEMA,
+        INPUT_QUALITY_RATING_TEMPLATE,
+        OUTPUT_QUALITY_JSON_SCHEMA,
+        INPUT_CLASSIFICATION_TEMPLATE,
+        OUTPUT_CLASSIFICATION_JSON_SCHEMA,
     )
 except ImportError:
     # Fallback for cases where the script might be run directly or module structure is different
     # This might happen if 'src' is not in PYTHONPATH or running from a different working directory.
     # For package execution, the relative import `..prompts` should work.
     print("Could not import from ..prompts, trying direct import (may fail in package context)")
-    from prompts import ( # type: ignore
-        INPUT_DIFFICULTY_RATING_TEMPLATE, OUTPUT_DIFFICULTY_JSON_SCHEMA,
-        INPUT_QUALITY_RATING_TEMPLATE, OUTPUT_QUALITY_JSON_SCHEMA,
-        INPUT_CLASSIFICATION_TEMPLATE, OUTPUT_CLASSIFICATION_JSON_SCHEMA
+    from prompts import (  # type: ignore
+        INPUT_DIFFICULTY_RATING_TEMPLATE,
+        OUTPUT_DIFFICULTY_JSON_SCHEMA,
+        INPUT_QUALITY_RATING_TEMPLATE,
+        OUTPUT_QUALITY_JSON_SCHEMA,
+        INPUT_CLASSIFICATION_TEMPLATE,
+        OUTPUT_CLASSIFICATION_JSON_SCHEMA,
     )
-
 
 def get_difficulty_rating(instruction: str) -> dict | None:
     """
@@ -178,9 +155,8 @@ if __name__ == '__main__':
     # 1. Make sure GEMINI_API_KEY is set in your environment.
     # 2. Ensure prompts.py is accessible (e.g., copy it to this directory for a quick test,
     #    or run this script as part of the package `python -m src.text_filter_pipeline.utils.gemini_utils`).
-
-    if not os.getenv("GEMINI_API_KEY"):
-        print("Please set the GEMINI_API_KEY environment variable to run this test.")
+    if not API_KEY:
+        print("Please set GEMINI_API_KEY to run tests.")
     else:
         # For __main__ execution, we might need to adjust Python path or use absolute imports if possible
         # For simplicity, if run directly, it might rely on `prompts.py` being in the same folder or PYTHONPATH.
