@@ -8,6 +8,11 @@ import logging
 # Import the new utility functions
 from utils.text_cleaner import clean_texts
 from utils.text_processor import score_texts
+from utils.gemini_utils import (
+    get_difficulty_rating,
+    get_quality_rating,
+    get_instruction_classification
+)
 
 # Attempt to import torch for initial device check for logging, if desired.
 # Actual torch dependency is handled within text_processor.
@@ -51,109 +56,130 @@ def main():
     data_file = "data/fineweb_100_samples.json"
     if not os.path.exists(data_file):
         logger.error(f"Data file not found at {data_file}")
-        # Suggestion to run the generation script might be removed if data is always pre-supplied
-        # logger.info("Please run 'python サンプルで100件取得する.py' to generate the data.")
         return
 
     logger.info(f"Loading data from {data_file}...")
-    texts = load_data(data_file)
-    if not texts:
+    raw_texts_from_load = load_data(data_file) # Renamed to avoid confusion
+    if not raw_texts_from_load:
         logger.error("No texts found in the data file.")
         return
-    logger.info(f"Loaded {len(texts)} texts.")
-    if texts:
-        logger.debug(f"First text sample: '{texts[0][:100]}...'")
+    logger.info(f"Loaded {len(raw_texts_from_load)} texts.")
+    if raw_texts_from_load:
+        logger.debug(f"First text sample: '{raw_texts_from_load[0][:100]}...'")
 
     # Step 2: Filter text using the utility function from text_cleaner
     logger.info("Filtering texts using text_cleaner.clean_texts...")
     num_cores_for_cleaning = os.cpu_count() or 1
-    # Note: clean_texts will log its own progress internally if its logger is configured.
-    # We pass the main logger's level for consistency if desired, or let it use its own.
-    # For now, clean_texts has its own logger.
-    filtered_texts_content = clean_texts(texts, num_cores=num_cores_for_cleaning)
+    filtered_texts_content = clean_texts(raw_texts_from_load, num_cores=num_cores_for_cleaning)
 
     if not filtered_texts_content:
         logger.warning("Text cleaning returned no content. Proceeding might lead to errors or empty results.")
-        # Decide if to return or continue based on requirements. For now, continue.
     else:
         logger.info(f"Text cleaning complete. Processed {len(filtered_texts_content)} texts via utility.")
 
     # Save filtered texts to a JSONL file
+    # This step remains, as scoring might still want to read from a file, or it's good for caching.
     filtered_output_file = "filtered_texts.jsonl"
     try:
         with open(filtered_output_file, 'w', encoding='utf-8') as f:
-            for text in filtered_texts_content:
-                f.write(json.dumps({"text": text}) + "\n")
+            for text_content_item in filtered_texts_content: # Iterate through list of strings
+                f.write(json.dumps({"text": text_content_item}) + "\n")
         logger.info(f"Filtered texts saved to {filtered_output_file}")
     except IOError as e:
         logger.error(f"Could not write filtered texts to {filtered_output_file}: {e}")
-        return # Stop if we can't save filtered texts
+        return
 
-    if filtered_texts_content:
-        logger.debug(f"First filtered text sample: '{filtered_texts_content[0][:100]}...'")
+    if not filtered_texts_content: # If cleaning resulted in no texts, stop or handle.
+        logger.warning("No texts available after cleaning. Skipping subsequent steps.")
+        logger.info("Text processing pipeline finished.")
+        return
 
-    # Step 3: Score filtered texts using the utility function from text_processor
-    logger.info("Preparing to score filtered texts using text_processor.score_texts...")
+    logger.debug(f"First filtered text sample: '{filtered_texts_content[0][:100]}...'")
 
-    # Load filtered texts from the JSONL file to pass to the scorer utility
-    # The utility itself doesn't handle file I/O for input texts to keep it focused.
-    texts_to_score_from_file = []
-    if os.path.exists(filtered_output_file):
-        logger.info(f"Loading filtered texts from {filtered_output_file} for scoring...")
-        try:
-            with open(filtered_output_file, 'r', encoding='utf-8') as f:
-                for line_num, line in enumerate(f, 1):
-                    try:
-                        texts_to_score_from_file.append(json.loads(line)['text'])
-                    except json.JSONDecodeError:
-                        logger.warning(f"Skipping malformed line {line_num} in {filtered_output_file}: {line.strip()}")
-                    except KeyError:
-                        logger.warning(f"Skipping line {line_num} in {filtered_output_file} due to missing 'text' key: {line.strip()}")
-        except IOError as e:
-            logger.error(f"Could not read filtered texts from {filtered_output_file}: {e}")
-            # texts_to_score_from_file remains empty
+    # Step 3: Score filtered texts
+    # The `score_texts` utility takes a list of strings.
+    # We can use `filtered_texts_content` directly if it's available in memory.
+    # Or, if preferred, load from `filtered_output_file` as originally done.
+    # Using `filtered_texts_content` directly avoids re-reading if the list is not excessively large.
+    logger.info("Preparing to score filtered texts...")
 
-    if not texts_to_score_from_file:
-        logger.warning(f"No texts loaded from {filtered_output_file} to score. Skipping scoring step.")
-    else:
-        logger.info(f"Loaded {len(texts_to_score_from_file)} texts for scoring from {filtered_output_file}.")
+    # texts_to_process will hold the text content for scoring and subsequent Gemini steps
+    texts_to_process = filtered_texts_content # Use the in-memory list of cleaned texts
 
-        # Parameters for the scorer can be defined here or loaded from config
-        # The text_processor.score_texts function will handle auto-detection if some are None.
-        # For example, device, batch_size, num_workers, dtype can be None for auto-config.
-        scored_results = score_texts(
-            texts_to_score_from_file
-            # model_name="hotchpotch/fineweb-2-edu-japanese-classifier", # Default in function
-            # device=None, # Auto-detect
-            # batch_size=None, # Auto-set
-            # num_workers=None, # Auto-set
-            # dtype=None # Auto-set
-        )
+    scored_results = score_texts(texts_to_process)
 
-        if scored_results is not None:
-            logger.info(f"Scoring complete via utility. Received {len(scored_results)} results.")
-            scored_output_file = "scored_texts.jsonl"
-            try:
-                with open(scored_output_file, 'w', encoding='utf-8') as f:
-                    for i, text_content in enumerate(texts_to_score_from_file): # Use the original text for output
-                        if i < len(scored_results):
-                            is_educational, score_value = scored_results[i]
-                            f.write(json.dumps({"text": text_content, "is_educational": is_educational, "score": score_value}) + "\n")
-                        else:
-                            logger.warning(f"Mismatch between number of texts to score and results at index {i}. Skipping writing this result.")
-                logger.info(f"Scored texts saved to {scored_output_file}")
-                if scored_results:
-                    logger.debug(f"First scored text sample (from main): Score={scored_results[0][1]:.2f}, Educational={scored_results[0][0]}, Text='{texts_to_score_from_file[0][:100]}...'")
-            except IOError as e:
-                logger.error(f"Could not write scored texts to {scored_output_file}: {e}")
-        else:
-            logger.info("Scoring step was skipped or failed (e.g., classifier not available or error during processing). Check logs from text_processor.")
+    if scored_results is None:
+        logger.error("Scoring step failed or returned no results. Cannot proceed with Gemini evaluations.")
+        logger.info("Text processing pipeline finished.")
+        return
+
+    logger.info(f"Scoring complete. Received {len(scored_results)} results.")
+
+    # Step 4: Perform Gemini evaluations (Difficulty, Quality, Classification)
+    # and combine with scored results.
+
+    # The GEMINI_API_KEY should be set in the environment for gemini_utils to work.
+    # Check if it's set and log a warning if not, as gemini_utils also does.
+    if not os.getenv("GEMINI_API_KEY"):
+        logger.warning("GEMINI_API_KEY environment variable is not set. Gemini API calls will likely fail.")
+
+    logger.info("Performing Gemini evaluations for each text...")
+
+    final_results_list = []
+    # texts_to_process contains the actual text strings.
+    # scored_results contains tuples of (is_educational, score_value).
+    # Ensure they are of the same length.
+    if len(texts_to_process) != len(scored_results):
+        logger.error(f"Mismatch in length between texts_to_process ({len(texts_to_process)}) and scored_results ({len(scored_results)}). Aborting Gemini processing.")
+        # Optionally, decide how to handle this: skip Gemini, or stop. For now, stopping further processing.
+        logger.info("Text processing pipeline finished due to data mismatch.")
+        return
+
+    for i, text_content in enumerate(texts_to_process):
+        logger.info(f"Processing text {i+1}/{len(texts_to_process)} with Gemini...")
+        # It's important that `text_content` here is the actual instruction/text, not just metadata.
+        # Assuming `texts_to_process` holds these strings.
+
+        difficulty_info = get_difficulty_rating(text_content)
+        quality_info = get_quality_rating(text_content)
+        classification_info = get_instruction_classification(text_content)
+
+        is_educational, score_value = scored_results[i]
+
+        # Construct the final dictionary for this text item
+        # Use placeholder or error values if Gemini calls fail (return None)
+        result_item = {
+            "text": text_content,
+            "is_educational": is_educational,
+            "score": score_value,
+            "difficulty_rating": difficulty_info if difficulty_info else {"error": "Failed to get difficulty"},
+            "quality_rating": quality_info if quality_info else {"error": "Failed to get quality"},
+            "classification": classification_info if classification_info else {"error": "Failed to get classification"}
+        }
+        final_results_list.append(result_item)
+
+        if (i + 1) % 10 == 0: # Log progress every 10 texts
+             logger.info(f"Gemini processing: {i+1}/{len(texts_to_process)} texts processed.")
+
+    logger.info("Gemini evaluations complete.")
+
+    # Step 5: Save final combined results
+    final_output_file = "final_processed_texts.jsonl" # New output file name
+    try:
+        with open(final_output_file, 'w', encoding='utf-8') as f:
+            for result_item in final_results_list:
+                f.write(json.dumps(result_item) + "\n")
+        logger.info(f"Final processed texts (including scores and Gemini evaluations) saved to {final_output_file}")
+        if final_results_list:
+            # Log details of the first processed item as a sample
+            first_item_log = {k: v for k, v in final_results_list[0].items() if k != "text"}
+            first_item_log["text_preview"] = final_results_list[0]["text"][:100] + "..."
+            logger.debug(f"First final processed text sample (from main): {json.dumps(first_item_log)}")
+
+    except IOError as e:
+        logger.error(f"Could not write final processed texts to {final_output_file}: {e}")
 
     logger.info("Text processing pipeline finished.")
 
 if __name__ == "__main__":
-    # Initial torch import for CUDA check is still fine here, or can be removed
-    # as text_processor also handles torch import.
-    # If torch is imported here, it's available for the device check in main's scope if any.
-    # For this refactoring, it's less critical in main.py directly.
     main()
